@@ -34,9 +34,6 @@ const achievementComboEl = document.querySelector("#achievementCombo");
 const achievementCoinsEl = document.querySelector("#achievementCoins");
 const startButton = document.querySelector("#startButton");
 const assetStatus = document.querySelector("#assetStatus");
-// G_DIAGNOSTICS_TEMP
-const gDiagnostics = new URLSearchParams(location.search).has("g-diagnostics");
-let diagnosticCollisions = !gDiagnostics;
 
 let assetsReady = false;
 let assetErrors = 0;
@@ -104,7 +101,11 @@ function terrainHeight(x, worldZ) {
   const rolling = Math.sin(worldZ * .043) * .42 + Math.sin(worldZ * .017 + 1.4) * .72;
   const side = Math.sin(x * .15 + worldZ * .019) * .34;
   const bank = Math.sin(worldZ * .009) * x * .023;
-  return downhill + rolling + side + bank + crestHeight(worldZ);
+  const windCrust =
+    Math.sin(worldZ * .29 + x * .13) * .045 +
+    Math.sin(worldZ * .71 - x * .21 + 1.8) * .018;
+  const powderDrift = Math.max(0, Math.sin(worldZ * .075 + x * .052 + 1.1)) ** 4 * .12;
+  return downhill + rolling + side + bank + windCrust + powderDrift + crestHeight(worldZ);
 }
 
 const groundGeo = new THREE.PlaneGeometry(74, 220, 30, 80);
@@ -118,20 +119,22 @@ function makeSnowTexture() {
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = (y * size + x) * 4;
-      const grain = Math.random() * 20;
-      const wind = Math.sin(y * .11 + Math.sin(x * .025) * 2.4) * 4;
-      const sparkle = Math.random() > .997 ? 28 : 0;
-      const value = Math.max(188, Math.min(255, 229 + grain + wind + sparkle));
-      image.data[i] = value - 5;
-      image.data[i + 1] = value;
-      image.data[i + 2] = Math.min(255, value + 5);
+      const grain = Math.random() * 15;
+      const fineRipple = Math.sin(y * .17 + Math.sin(x * .032) * 3.1) * 5;
+      const longRipple = Math.sin(y * .037 + x * .012) * 7;
+      const packedPatch = Math.sin(x * .019 + Math.sin(y * .014) * 2.8) * 6;
+      const sparkle = Math.random() > .996 ? 34 : 0;
+      const value = Math.max(184, Math.min(255, 228 + grain + fineRipple + longRipple + packedPatch + sparkle));
+      image.data[i] = value - 9;
+      image.data[i + 1] = value - 2;
+      image.data[i + 2] = Math.min(255, value + 6);
       image.data[i + 3] = 255;
     }
   }
   textureCtx.putImageData(image, 0, 0);
   const texture = new THREE.CanvasTexture(textureCanvas);
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(7, 24);
+  texture.repeat.set(6, 30);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return texture;
@@ -141,9 +144,10 @@ const groundMat = new THREE.MeshStandardMaterial({
   color: 0xf2f7f8,
   map: snowTexture,
   bumpMap: snowTexture,
-  bumpScale: .065,
-  roughness: .84,
+  bumpScale: .11,
+  roughness: .91,
   metalness: 0,
+  vertexColors: true,
   flatShading: false
 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
@@ -151,6 +155,42 @@ ground.position.z = -94;
 ground.receiveShadow = true;
 scene.add(ground);
 const groundPositions = groundGeo.attributes.position;
+const groundColors = new Float32Array(groundPositions.count * 3);
+groundGeo.setAttribute("color", new THREE.BufferAttribute(groundColors, 3));
+const powderColor = new THREE.Color(0xf8fcfb);
+const crustColor = new THREE.Color(0xcbdde1);
+const snowColor = new THREE.Color();
+
+function makeSnowParticleMaterial(color, pointSize, opacity, blending = THREE.NormalBlending) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      color: { value: new THREE.Color(color) },
+      pointSize: { value: pointSize },
+      opacity: { value: opacity }
+    },
+    vertexShader: `
+      uniform float pointSize;
+      void main() {
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        gl_PointSize = clamp(pointSize * (260.0 / max(1.0, -viewPosition.z)), 1.0, 64.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 color;
+      uniform float opacity;
+      void main() {
+        float distanceFromCenter = length(gl_PointCoord - vec2(0.5));
+        float softEdge = 1.0 - smoothstep(0.08, 0.5, distanceFromCenter);
+        if (softEdge < 0.01) discard;
+        gl_FragColor = vec4(color, softEdge * opacity);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending
+  });
+}
 
 // Thin piste markers race past the player and make velocity visible.
 const pisteMarkers = new THREE.Group();
@@ -163,6 +203,37 @@ for (let z = -4; z > -200; z -= 7) {
   }
 }
 scene.add(pisteMarkers);
+
+// A pooled pair of shallow grooves records the skier's recent line in the snow.
+const trackSampleCount = 180;
+const trackPositions = new Float32Array(trackSampleCount * 12).fill(999);
+const trackWorldZ = new Float32Array(trackSampleCount);
+const trackX = new Float32Array(trackSampleCount);
+const trackHeading = new Float32Array(trackSampleCount);
+const trackActive = new Uint8Array(trackSampleCount);
+let trackCursor = 0;
+let lastTrackProgress = 0;
+const trackGeo = new THREE.BufferGeometry();
+trackGeo.setAttribute("position", new THREE.BufferAttribute(trackPositions, 3));
+const trackLines = new THREE.LineSegments(
+  trackGeo,
+  new THREE.LineBasicMaterial({
+    color: 0x789ca4,
+    transparent: true,
+    opacity: .38,
+    depthWrite: false
+  })
+);
+trackLines.frustumCulled = false;
+scene.add(trackLines);
+
+function emitTrackSample() {
+  const i = trackCursor++ % trackSampleCount;
+  trackWorldZ[i] = progress;
+  trackX[i] = playerX;
+  trackHeading[i] = heading;
+  trackActive[i] = 1;
+}
 
 function createSkier() {
   const group = new THREE.Group();
@@ -444,6 +515,7 @@ function addObject(type, worldZ, x, options = {}) {
     gold,
     feverCoin: Boolean(options.fever),
     heightOffset: options.heightOffset || 0,
+    pattern: options.pattern || "scatter",
     nearMissed: false,
     lastZ: mesh.position.z,
     phase: Math.random() * Math.PI * 2
@@ -451,38 +523,86 @@ function addObject(type, worldZ, x, options = {}) {
 }
 
 const ZONES = [
-  { name: "NORMAL RUN", stepMin: 5, stepRange: 6, thresholds: [.58, .75, .92] },
-  { name: "DEEP FOREST", stepMin: 3.2, stepRange: 4.2, thresholds: [.72, .8, .92] },
-  { name: "ROCK GARDEN", stepMin: 4.8, stepRange: 5.5, thresholds: [.2, .62, .78] },
-  { name: "COIN CORRIDOR", stepMin: 5, stepRange: 5.5, thresholds: [.14, .22, .88] }
+  { name: "NORMAL RUN", stepMin: 5, stepRange: 6, thresholds: [.58, .75, .92], patterns: [.45, .3] },
+  { name: "DEEP FOREST", stepMin: 3.2, stepRange: 4.2, thresholds: [.72, .8, .92], patterns: [.25, .6] },
+  { name: "ROCK GARDEN", stepMin: 4.8, stepRange: 5.5, thresholds: [.2, .62, .78], patterns: [.6, .25] },
+  { name: "COIN CORRIDOR", stepMin: 5, stepRange: 5.5, thresholds: [.14, .22, .88], patterns: [.15, .2] }
 ];
 
 function zoneAt(worldZ) {
   return Math.floor(worldZ / 400) % ZONES.length;
 }
 
-function populate(from, to) {
+function addScatterPattern(from, to, zone) {
   for (let z = from; z < to;) {
-    const zone = ZONES[zoneAt(z)];
     const safeCenter = Math.random() > .68;
     const roll = Math.random();
     const [treeEnd, rockEnd, coinEnd] = zone.thresholds;
     let type = roll < treeEnd ? "tree" : roll < rockEnd ? "rock" : roll < coinEnd ? "coin" : "ramp";
     let x = (Math.random() - .5) * 34;
     if (safeCenter && (type === "tree" || type === "rock")) x = (Math.random() > .5 ? 1 : -1) * (9 + Math.random() * 9);
-    addObject(type, z, x);
+    addObject(type, z, x, { pattern: "scatter" });
     if (type === "ramp" && Math.random() < .3) {
       const count = 6;
       for (let i = 0; i < count; i++) {
         const t = i / (count - 1);
         addObject("coin", z + 5 + i * 6, x, {
           gold: false,
-          heightOffset: Math.sin(t * Math.PI) * 3.35
+          heightOffset: Math.sin(t * Math.PI) * 3.35,
+          pattern: "scatter"
         });
       }
     }
-    if (type === "coin" && Math.random() > .45) addObject("coin", z + 3.2, x + (Math.random() - .5) * 1.2);
+    if (type === "coin" && Math.random() > .45) {
+      addObject("coin", z + 3.2, x + (Math.random() - .5) * 1.2, { pattern: "scatter" });
+    }
     z += zone.stepMin + Math.random() * zone.stepRange;
+  }
+}
+
+function addSlalomPattern(from, to) {
+  let gate = 0;
+  for (let z = from + 5; z < to - 2; z += 13) {
+    const side = gate % 2 === 0 ? -1 : 1;
+    const obstacleX = side * 5.4;
+    addObject("tree", z, obstacleX, { pattern: "slalom" });
+    addObject("tree", z + 1.2, obstacleX + side * (2.1 + Math.random() * 1.2), { pattern: "slalom" });
+    const racingX = -side * 5.2;
+    addObject("coin", z + 2.4, racingX, { gold: false, pattern: "slalom" });
+    addObject("coin", z + 6.1, racingX * .62, { gold: false, pattern: "slalom" });
+    gate++;
+  }
+}
+
+function addRacingLinePattern(from, to) {
+  const length = Math.max(1, to - from);
+  let index = 0;
+  for (let z = from + 3; z < to - 1; z += 4.6) {
+    const t = (z - from) / length;
+    const x = Math.sin(t * Math.PI * 2.35 - .65) * 7.4;
+    addObject("coin", z, x, { gold: false, pattern: "racing" });
+    if (index % 4 === 0) {
+      const outside = Math.sign(x || 1);
+      addObject("tree", z + 1.6, -outside * (13.5 + Math.random() * 3), { pattern: "racing" });
+    }
+    index++;
+  }
+}
+
+function populate(from, to) {
+  for (let cursor = from; cursor < to;) {
+    const zone = ZONES[zoneAt(cursor)];
+    const length = Math.min(to - cursor, 36 + Math.random() * 24);
+    const roll = Math.random();
+    const [scatterEnd, slalomEnd] = zone.patterns;
+    if (length < 18 || roll < scatterEnd) {
+      addScatterPattern(cursor, cursor + length, zone);
+    } else if (roll < scatterEnd + slalomEnd) {
+      addSlalomPattern(cursor, cursor + length);
+    } else {
+      addRacingLinePattern(cursor, cursor + length);
+    }
+    cursor += length;
   }
 }
 populate(28, 230);
@@ -498,7 +618,7 @@ const snowGeo = new THREE.BufferGeometry();
 snowGeo.setAttribute("position", new THREE.BufferAttribute(snowPositions, 3));
 const snowPoints = new THREE.Points(
   snowGeo,
-  new THREE.PointsMaterial({ color: 0xffffff, size: .075, transparent: true, opacity: .45, depthWrite: false })
+  makeSnowParticleMaterial(0xffffff, .085, .5)
 );
 scene.add(snowPoints);
 
@@ -539,9 +659,25 @@ const sprayGeo = new THREE.BufferGeometry();
 sprayGeo.setAttribute("position", new THREE.BufferAttribute(sprayPositions, 3));
 const sprayPoints = new THREE.Points(
   sprayGeo,
-  new THREE.PointsMaterial({ color: 0xffffff, size: .17, transparent: true, opacity: .82, depthWrite: false })
+  makeSnowParticleMaterial(0xf7fbff, .24, .92)
 );
+sprayPoints.frustumCulled = false;
 scene.add(sprayPoints);
+
+// A second, larger and slower layer gives the hard pellets a powder-cloud body.
+const mistCount = 84;
+const mistPositions = new Float32Array(mistCount * 3).fill(999);
+const mistVelocity = Array.from({ length: mistCount }, () => new THREE.Vector3());
+const mistLife = new Float32Array(mistCount);
+let mistCursor = 0;
+const mistGeo = new THREE.BufferGeometry();
+mistGeo.setAttribute("position", new THREE.BufferAttribute(mistPositions, 3));
+const mistPoints = new THREE.Points(
+  mistGeo,
+  makeSnowParticleMaterial(0xf7fbff, .82, .3)
+);
+mistPoints.frustumCulled = false;
+scene.add(mistPoints);
 
 const clock = new THREE.Clock();
 const keys = { left: false, right: false, tuck: false };
@@ -552,6 +688,8 @@ let speed = 27;
 let boost = 0;
 let edgeLoadTimer = 0;
 let pumpArmed = false;
+let stumbleTimer = 0;
+let stumbleSpeedFactor = 1;
 let distance = 0;
 let coins = 0;
 let feverGauge = 0;
@@ -584,7 +722,6 @@ let airTime = 0;
 let previousGroundY = terrainHeight(0, 0);
 let previousCrestY = crestHeight(0);
 let crestCooldown = 0;
-let crestJumpCount = 0;
 let spawnEnd = 230;
 let shake = 0;
 let carveTimer = 0;
@@ -612,6 +749,19 @@ function emitCarveSpray(turn, amount = 5) {
       4 + Math.random() * 7
     );
     sprayLife[i] = .32 + Math.random() * .42;
+  }
+  const mistAmount = Math.max(1, Math.ceil(amount / 6));
+  for (let n = 0; n < mistAmount; n++) {
+    const i = mistCursor++ % mistCount;
+    mistPositions[i * 3] = playerX - turn * (.2 + Math.random() * .35);
+    mistPositions[i * 3 + 1] = skier.position.y + .15 + Math.random() * .16;
+    mistPositions[i * 3 + 2] = 4.45 + Math.random() * .38;
+    mistVelocity[i].set(
+      -turn * (1.4 + Math.random() * 3.1),
+      .8 + Math.random() * 1.7,
+      2.6 + Math.random() * 4.4
+    );
+    mistLife[i] = .52 + Math.random() * .5;
   }
 }
 
@@ -703,6 +853,9 @@ function burstSound(kind, level = 1) {
   } else if (kind === "crash") {
     noiseBurst(.55, .18, 220);
     tone(140, .48, "sawtooth", .08, 38);
+  } else if (kind === "stumble") {
+    noiseBurst(.28, .12, 280);
+    tone(92, .24, "triangle", .075, 48);
   } else if (kind === "near") {
     noiseBurst(.09, .055, 2850);
     const comboPitch = 760 * Math.pow(2, Math.min(level, 5) * 2 / 12);
@@ -772,6 +925,7 @@ function showRewardToast(label, value, kind = "near") {
   rewardToastLabel.textContent = label;
   rewardToastValue.textContent = value;
   nearMissToast.classList.toggle("air", kind === "air");
+  nearMissToast.classList.toggle("stumble", kind === "stumble");
   nearMissToast.classList.remove("active");
   void nearMissToast.offsetWidth;
   nearMissToast.classList.add("active");
@@ -818,10 +972,12 @@ function updateMetaUI() {
   totalCoinsEl.textContent = String(lifetimeCoins).padStart(4, "0");
   totalRunsEl.textContent = String(lifetimeRuns).padStart(3, "0");
   const tier = lifetimeCoins >= 200 ? "GOLD" : lifetimeCoins >= 50 ? "ACID" : "WHITE";
-  const sprayColor = lifetimeCoins >= 200 ? 0xffc13b : lifetimeCoins >= 50 ? 0xd8ff52 : 0xffffff;
+  const tierColor = lifetimeCoins >= 200 ? 0xffc13b : lifetimeCoins >= 50 ? 0xd8ff52 : 0xf7fbff;
+  const snowSprayColor = 0xf7fbff;
   sprayTierEl.textContent = tier;
-  sprayTierEl.style.color = `#${sprayColor.toString(16).padStart(6, "0")}`;
-  sprayPoints.material.color.setHex(sprayColor);
+  sprayTierEl.style.color = `#${tierColor.toString(16).padStart(6, "0")}`;
+  sprayPoints.material.uniforms.color.value.setHex(snowSprayColor);
+  mistPoints.material.uniforms.color.value.setHex(snowSprayColor);
   achievement1000El.classList.toggle("unlocked", achievements.distance1000);
   achievementComboEl.classList.toggle("unlocked", achievements.combo5);
   achievementCoinsEl.classList.toggle("unlocked", achievements.coins30);
@@ -843,6 +999,8 @@ function reset() {
   boost = 0;
   edgeLoadTimer = 0;
   pumpArmed = false;
+  stumbleTimer = 0;
+  stumbleSpeedFactor = 1;
   coins = 0;
   feverGauge = 0;
   feverTimer = 0;
@@ -867,7 +1025,6 @@ function reset() {
   previousGroundY = terrainHeight(0, 0);
   previousCrestY = crestHeight(0);
   crestCooldown = 0;
-  crestJumpCount = 0;
   shake = 0;
   keys.left = false;
   keys.right = false;
@@ -875,6 +1032,14 @@ function reset() {
   sprayPositions.fill(999);
   sprayLife.fill(0);
   sprayGeo.attributes.position.needsUpdate = true;
+  mistPositions.fill(999);
+  mistLife.fill(0);
+  mistGeo.attributes.position.needsUpdate = true;
+  trackPositions.fill(999);
+  trackActive.fill(0);
+  trackCursor = 0;
+  lastTrackProgress = 0;
+  trackGeo.attributes.position.needsUpdate = true;
   objects.forEach(o => obstacleRoot.remove(o.mesh));
   objects.length = 0;
   spawnEnd = 230;
@@ -927,6 +1092,19 @@ function gameOver() {
   shake = .65;
   burstSound("crash");
   vibrate(80);
+}
+
+function triggerStumble() {
+  if (state !== "playing") return;
+  stumbleTimer = .8;
+  stumbleSpeedFactor = .55;
+  speed *= .55;
+  boost = 0;
+  landingCompression = 1;
+  shake = Math.max(shake, .55);
+  burstSound("stumble");
+  vibrate(45);
+  showRewardToast("STUMBLE", "RECOVER", "stumble");
 }
 
 function finishGameOver() {
@@ -982,6 +1160,8 @@ function updatePlaying(dt) {
       shell.classList.remove("fever", "fever-ending");
     }
   }
+  stumbleTimer = Math.max(0, stumbleTimer - dt);
+  stumbleSpeedFactor = 1 - (1 - stumbleSpeedFactor) * Math.pow(.12, dt);
   const steer = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
   const onSnow = jumpHeight < .08;
   const isTucking = keys.tuck && onSnow;
@@ -1019,7 +1199,8 @@ function updatePlaying(dt) {
   const skillSpeed = Math.min(67, (baseSpeed + boost) * (isTucking ? 1.18 : 1));
   speed = skillSpeed *
     (1 - edgeMagnitude * .045) *
-    feverFactor;
+    feverFactor *
+    stumbleSpeedFactor;
   progress += speed * dt;
   distance += speed * dt;
 
@@ -1061,9 +1242,8 @@ function updatePlaying(dt) {
     crestCooldown === 0
   ) {
     airTime = 0;
-    jumpVelocity = Math.min(12, 7.2 + Math.abs(crestDropRate) * 3.2);
+    jumpVelocity = Math.min(13, 9.8 + Math.abs(crestDropRate) * 2.5);
     crestCooldown = 6;
-    crestJumpCount++;
     burstSound("jump");
     showRewardToast("CREST LAUNCH", `${Math.floor(speed * 3.6)} km/h`, "air");
   }
@@ -1080,6 +1260,8 @@ function updatePlaying(dt) {
       airTime = 0;
       landingCompression = 1;
       shake = Math.max(shake, .15);
+      emitCarveSpray(-1, 16);
+      emitCarveSpray(1, 16);
       burstSound("land");
       vibrate(20);
       if (completedAirTime >= 1.4) {
@@ -1112,21 +1294,30 @@ function updatePlaying(dt) {
   landingCompression *= Math.pow(.035, dt);
   const carveLoad = Math.min(1, Math.abs(edgeAngle) * .82 + Math.abs(turnRate) * .16);
   const speedTuck = THREE.MathUtils.clamp((speed - 27) / 70, 0, .26);
+  const stumblePose = stumbleTimer > 0 ? stumbleTimer / .8 : 0;
   const crouchTarget = onSnow
-    ? Math.max(isTucking ? .7 : 0, .12 + speedTuck + carveLoad * .42 + landingCompression * .46)
+    ? Math.max(
+      isTucking ? .7 : 0,
+      .12 + speedTuck + carveLoad * .42 + landingCompression * .46 + stumblePose * .34
+    )
     : .06;
   crouchAmount = THREE.MathUtils.lerp(crouchAmount, Math.min(.78, crouchTarget), 1 - Math.pow(.006, dt));
-  skier.rotation.z = leanAngle;
+  skier.rotation.x = stumblePose * .16;
+  skier.rotation.z = leanAngle + Math.sin(clock.elapsedTime * 34) * stumblePose * .09;
   skier.rotation.y = THREE.MathUtils.lerp(skier.rotation.y, -heading * .72, 1 - Math.pow(.012, dt));
   skier.userData.torso.rotation.x = .19 + Math.min(.13, speed * .0023);
   skier.userData.shoulders.rotation.y = heading * .22;
   skier.userData.backpack.rotation.z = -leanAngle * .08;
-  skierPhoto.scale.y = 1;
+  skierPhoto.scale.y = 1 - stumblePose * .07;
   deformSkier(crouchAmount, edgeAngle);
   skierShadow.position.set(playerX, groundY + .025, 4);
   const shadowScale = Math.max(.42, 1 - jumpHeight * .16);
   skierShadow.scale.setScalar(shadowScale);
   skierShadow.material.opacity = .2 * shadowScale;
+  if (state === "playing" && jumpHeight < .08 && progress - lastTrackProgress >= .65) {
+    emitTrackSample();
+    lastTrackProgress = progress;
+  }
 
   while (spawnEnd < progress + 240) {
     populate(spawnEnd, spawnEnd + 80);
@@ -1147,7 +1338,9 @@ function updatePlaying(dt) {
     const dx = Math.abs(o.x - playerX);
     const collisionRadius = o.type === "tree" ? .8 : o.type === "ramp" ? 1.25 : .7;
     const verticalHit = o.type !== "coin" || Math.abs(o.mesh.position.y - (skier.position.y + 1.2)) < 1.15;
-    if (diagnosticCollisions && !o.hit && dz < 1.05 && dx < collisionRadius && verticalHit && state === "playing") {
+    const crossedCollisionPlane = previousZ < 4 && z >= 4;
+    const atCollisionPlane = dz < 1.05 || crossedCollisionPlane;
+    if (!o.hit && atCollisionPlane && dx < collisionRadius && verticalHit && state === "playing") {
       if (o.type === "coin") {
         o.hit = true;
         collectCoin(o);
@@ -1164,12 +1357,26 @@ function updatePlaying(dt) {
     const avoidable = o.type === "tree" || o.type === "rock";
     const crossedPlayer = previousZ < 4.35 && z >= 4.35;
     const nearRadius = o.type === "tree" ? 1.75 : 1.55;
+    const stumbleRadius = collisionRadius + .25;
+    if (
+      avoidable &&
+      !o.hit &&
+      atCollisionPlane &&
+      dx >= collisionRadius &&
+      dx < stumbleRadius &&
+      jumpHeight < 1.05 &&
+      state === "playing"
+    ) {
+      o.hit = true;
+      o.nearMissed = true;
+      triggerStumble();
+    }
     if (
       avoidable &&
       !o.hit &&
       !o.nearMissed &&
       crossedPlayer &&
-      dx >= collisionRadius &&
+      dx >= stumbleRadius &&
       dx < nearRadius &&
       jumpHeight < .72 &&
       state === "playing"
@@ -1229,17 +1436,56 @@ function updateWorld(dt, elapsed) {
   for (let i = 0; i < groundPositions.count; i++) {
     const x = groundPositions.getX(i);
     const localZ = groundPositions.getZ(i) + ground.position.z;
-    groundPositions.setY(i, terrainHeight(x, progress + 4 - localZ));
+    const worldZ = progress + 4 - localZ;
+    groundPositions.setY(i, terrainHeight(x, worldZ));
+    const windBand = .5 + .5 * Math.sin(worldZ * .086 + x * .12 + Math.sin(worldZ * .021) * 2.6);
+    const packedSnow = .5 + .5 * Math.sin(worldZ * .027 - x * .071 + 1.8);
+    const powderAmount = THREE.MathUtils.clamp(.2 + windBand * .5 + packedSnow * .22, 0, 1);
+    snowColor.copy(crustColor).lerp(powderColor, powderAmount);
+    groundColors[i * 3] = snowColor.r;
+    groundColors[i * 3 + 1] = snowColor.g;
+    groundColors[i * 3 + 2] = snowColor.b;
   }
   groundPositions.needsUpdate = true;
+  groundGeo.attributes.color.needsUpdate = true;
   if (Math.floor(elapsed * 12) % 3 === 0) groundGeo.computeVertexNormals();
-  snowTexture.offset.y = (progress * .018) % 1;
+  snowTexture.offset.y = (progress * .03) % 1;
 
   pisteMarkers.position.z = (progress % 7);
   pisteMarkers.children.forEach(marker => {
     const localZ = marker.position.z + pisteMarkers.position.z;
     marker.position.y = terrainHeight(marker.position.x, progress + 4 - localZ) + .07;
   });
+
+  for (let i = 0; i < trackSampleCount; i++) {
+    if (!trackActive[i]) continue;
+    const headingAtMark = trackHeading[i];
+    const directionX = Math.sin(headingAtMark);
+    const normalX = Math.cos(headingAtMark);
+    const startWorldZ = trackWorldZ[i] - .72;
+    const endWorldZ = trackWorldZ[i] + .08;
+    const startZ = 4 - (startWorldZ - progress);
+    const endZ = 4 - (endWorldZ - progress);
+    if (endZ > 10.7) {
+      trackActive[i] = 0;
+      for (let p = 0; p < 12; p++) trackPositions[i * 12 + p] = 999;
+      continue;
+    }
+    for (let skiIndex = 0; skiIndex < 2; skiIndex++) {
+      const side = skiIndex === 0 ? -1 : 1;
+      const centerX = trackX[i] + side * normalX * .22;
+      const startX = centerX - directionX * .72;
+      const endX = centerX + directionX * .08;
+      const base = i * 12 + skiIndex * 6;
+      trackPositions[base] = startX;
+      trackPositions[base + 1] = terrainHeight(startX, startWorldZ) + .035;
+      trackPositions[base + 2] = startZ;
+      trackPositions[base + 3] = endX;
+      trackPositions[base + 4] = terrainHeight(endX, endWorldZ) + .035;
+      trackPositions[base + 5] = endZ;
+    }
+  }
+  trackGeo.attributes.position.needsUpdate = true;
 
   const snowArray = snowGeo.attributes.position.array;
   for (let i = 0; i < snowCount; i++) {
@@ -1294,6 +1540,23 @@ function updateWorld(dt, elapsed) {
     }
   }
   sprayGeo.attributes.position.needsUpdate = true;
+
+  for (let i = 0; i < mistCount; i++) {
+    if (mistLife[i] <= 0) continue;
+    mistLife[i] -= dt;
+    const v = mistVelocity[i];
+    mistPositions[i * 3] += v.x * dt;
+    mistPositions[i * 3 + 1] += v.y * dt;
+    mistPositions[i * 3 + 2] += v.z * dt;
+    v.y -= 3.2 * dt;
+    v.multiplyScalar(Math.pow(.34, dt));
+    if (mistLife[i] <= 0) {
+      mistPositions[i * 3] = 999;
+      mistPositions[i * 3 + 1] = 999;
+      mistPositions[i * 3 + 2] = 999;
+    }
+  }
+  mistGeo.attributes.position.needsUpdate = true;
 
   shake *= Math.pow(.03, dt);
   // Comfort camera: stable horizon and distance, with only a slow monotonic
@@ -1374,24 +1637,3 @@ document.querySelector("#soundButton").addEventListener("click", e => {
   if (audio && masterGain) masterGain.gain.setTargetAtTime(muted ? 0 : .8, audio.currentTime, .03);
   if (!muted) { initAudio(); tone(440); announce("サウンド オン"); }
 });
-
-if (gDiagnostics) {
-  window.__snowlineG = {
-    snapshot: () => ({ state, speed, distance, progress, jumpHeight, jumpVelocity, airTime, crestJumpCount }),
-    setRunPosition: value => {
-      distance = value;
-      progress = value;
-      previousGroundY = terrainHeight(playerX, progress);
-      previousCrestY = crestHeight(progress);
-    },
-    setKeys: (left, right, tuck) => {
-      keys.left = left;
-      keys.right = right;
-      keys.tuck = tuck;
-    },
-    setCollisions: enabled => { diagnosticCollisions = enabled; },
-    step: frames => {
-      for (let i = 0; i < frames; i++) updatePlaying(1 / 60);
-    }
-  };
-}

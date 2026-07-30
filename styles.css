@@ -212,6 +212,8 @@ button { font: inherit; }
 .near-miss-toast strong { color: var(--acid); font: 700 12px "DM Mono", monospace; }
 .near-miss-toast.air { border-left-color: #8eefff; }
 .near-miss-toast.air strong { color: #8eefff; }
+.near-miss-toast.stumble { border-left-color: #ff9b52; }
+.near-miss-toast.stumble strong { color: #ff9b52; }
 .near-miss-toast.active { animation: closeCall .72s cubic-bezier(.16,.85,.25,1) both; }
 @keyframes closeCall {
   0% { opacity: 0; transform: translate(-50%, 22px) skew(-5deg) scale(.7); }
