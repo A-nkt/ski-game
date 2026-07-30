@@ -1,0 +1,13 @@
+{
+  "name": "snowline-3d",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "esbuild src/game3d.js --bundle --minify --format=iife --target=es2020 --loader:.png=file --asset-names=assets/[name]-[hash] --outfile=game.js",
+    "dev": "npm run build && python3 -m http.server 8000"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.8",
+    "three": "^0.179.1"
+  }
+}

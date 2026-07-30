@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#081624" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23d8ff52'/%3E%3Cpath d='M39 10 22 34h11l-8 20 19-27H33z' fill='%2307131d'/%3E%3C/svg%3E" />
+    <title>SNOWLINE 3D — Alpine Rush</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="game-shell">
+      <canvas id="game" aria-label="スキーゲーム"></canvas>
+
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">S</span>
+          <div>
+            <strong>SNOWLINE</strong>
+            <small>ALPINE RUSH / 3D</small>
+          </div>
+        </div>
+        <button id="soundButton" class="icon-button" aria-label="サウンド切替">♪</button>
+      </header>
+
+      <section class="hud" aria-live="polite">
+        <div id="distanceHud" class="hud-item">
+          <span>DISTANCE</span>
+          <strong id="distance">0000<small>m</small></strong>
+          <small id="bestChase" class="best-chase"></small>
+        </div>
+        <div class="hud-item hud-center">
+          <span>SPEED</span>
+          <strong id="speed">42<small>km/h</small></strong>
+        </div>
+        <div id="nearMissHud" class="hud-item hud-center">
+          <span>NEAR MISS</span>
+          <strong><span id="nearMisses">00</span><small id="comboMultiplier" class="combo-multiplier">×0</small></strong>
+          <div class="hud-progress combo-progress"><i id="comboBar"></i></div>
+        </div>
+        <div class="hud-item hud-right">
+          <span>COINS <b id="feverLabel" class="fever-label">FEVER</b></span>
+          <strong id="coins">00</strong>
+          <div class="hud-progress fever-progress"><i id="feverBar"></i></div>
+        </div>
+      </section>
+
+      <div id="nearMissToast" class="near-miss-toast" aria-live="polite">
+        <span id="rewardToastLabel">CLOSE CALL ×1</span>
+        <strong id="rewardToastValue">+25m</strong>
+      </div>
+      <div id="zoneBanner" class="zone-banner" aria-live="polite">
+        <small>ENTERING</small><strong id="zoneName">NORMAL RUN</strong>
+      </div>
+
+      <section id="startScreen" class="overlay">
+        <div class="eyebrow"><span></span> NORTH RIDGE / 3D RUN 01</div>
+        <h1>CHASE THE<br /><em>FALL LINE.</em></h1>
+        <p>木々をかわし、コインを集めて、<br />どこまでも雪山を駆け降りよう。</p>
+        <div id="assetStatus" class="asset-status" aria-live="polite">
+          <i></i><span>ASSETS LOADING — 0%</span>
+        </div>
+        <button id="startButton" class="primary-button" disabled>
+          <span>RIDE NOW</span>
+          <b>→</b>
+        </button>
+        <div class="career-stats">
+          <div><span>TOTAL COINS</span><strong id="totalCoins">0000</strong></div>
+          <div><span>TOTAL RUNS</span><strong id="totalRuns">000</strong></div>
+          <div><span>SPRAY</span><strong id="sprayTier">WHITE</strong></div>
+        </div>
+        <div class="achievements" aria-label="実績">
+          <span id="achievement1000">1000m CLUB</span>
+          <span id="achievementCombo">COMBO ×5</span>
+          <span id="achievementCoins">30 COINS</span>
+        </div>
+        <div class="controls-hint">
+          <span><kbd>←</kbd><kbd>→</kbd> ターン</span>
+          <span><kbd>↓</kbd> タック</span>
+          <span><kbd>SPACE</kbd> ジャンプ</span>
+        </div>
+      </section>
+
+      <section id="gameOverScreen" class="overlay game-over hidden">
+        <div class="eyebrow"><span></span> RUN COMPLETE</div>
+        <h2>WIPE<br /><em>OUT.</em></h2>
+        <div id="runResultMessage" class="run-result-message"></div>
+        <div class="result-row">
+          <div><span>DISTANCE</span><strong id="finalDistance">0m</strong></div>
+          <div><span>BEST</span><strong id="bestDistance">0m</strong></div>
+        </div>
+        <button id="restartButton" class="primary-button">
+          <span>TRY AGAIN</span>
+          <b>↻</b>
+        </button>
+      </section>
+
+      <div class="mobile-controls">
+        <button id="leftButton" aria-label="左へ">←</button>
+        <button id="tuckButton" aria-label="タック">↓</button>
+        <button id="jumpButton" aria-label="ジャンプ">↑</button>
+        <button id="rightButton" aria-label="右へ">→</button>
+      </div>
+
+      <div class="grain"></div>
+      <div class="speed-vignette"></div>
+      <div class="fever-overlay"></div>
+      <div class="record-flash-overlay"></div>
+      <div class="edge-label">46° 32' 18" N &nbsp; // &nbsp; 8° 01' 34" E</div>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>
